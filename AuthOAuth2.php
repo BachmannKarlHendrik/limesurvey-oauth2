@@ -422,10 +422,37 @@ class AuthOAuth2 extends AuthPluginBase
             }
         }
         if ($this->getGlobalSetting('roles_needed', false) && $rolesKey = $this->getGlobalSetting('roles_key', '')) {
-            $aRoles = $this->getFromResourceData($rolesKey);
-            if (empty($aRoles)) {
+            // Check if there are roles in the nested structure
+            try {
+                $aRoles = null;
+                if (str_contains($rolesKey, '|')) {
+                    // Handle nested structure using | separator
+                    $segments = explode('|', $rolesKey);
+                    $tempValue = $this->resourceData;
+                    foreach ($segments as $segment) {
+                        if (!isset($tempValue[$segment])) {
+                            $aRoles = [];
+                            break;
+                        }
+                        $tempValue = $tempValue[$segment];
+                    }
+                    $aRoles = $tempValue;
+                } else {
+                    $aRoles = $this->getTemplatedKey($rolesKey);
+                }
+                
+                if (empty($aRoles)) {
+                    if ($this->getGlobalSetting('is_default')) {
+                        /* No way to connect : throw a 403 error (avoid looping) */
+                        throw new CHttpException(403, gT('Incorrect username and/or password!'));
+                    } else {
+                        $this->setAuthFailure(self::ERROR_AUTH_METHOD_INVALID);
+                        return;
+                    }
+                }
+            } catch (Exception $e) {
+                // If there's an error in roles check, deny access
                 if ($this->getGlobalSetting('is_default')) {
-                    /* No way to connect : throw a 403 error (avoid looping) */
                     throw new CHttpException(403, gT('Incorrect username and/or password!'));
                 } else {
                     $this->setAuthFailure(self::ERROR_AUTH_METHOD_INVALID);
@@ -755,29 +782,53 @@ class AuthOAuth2 extends AuthPluginBase
     {
         $rolesKey = $this->getGlobalSetting('roles_key', '');
         if (!empty($rolesKey)) {
-            $aRoles = $this->getFromResourceData($rolesKey);
-            if (!empty($aRoles)) {
-                $resetPermission = false;
-                $aRoles = (array) $aRoles;
-                foreach ($aRoles as $role) {
-                    $rolesRemovetext = $this->getGlobalSetting('roles_removetext', '');
-                    $role = str_replace($rolesRemovetext, '', $role);
-                    $criteria = new CDbCriteria();
-                    if ($this->getGlobalSetting('roles_insensitive', false)) {
-                        $criteria->compare('LOWER(name)', strtolower($role), true);
+            // Use getTemplatedKey to handle nested paths
+            try {
+                $aRoles = $this->getTemplatedKey($rolesKey);
+                // If getTemplatedKey returns a string but we need an array, try direct access
+                if (!is_array($aRoles)) {
+                    if (str_contains($rolesKey, '|')) {
+                        // Handle nested structure using | separator
+                        $segments = explode('|', $rolesKey);
+                        $tempValue = $this->resourceData;
+                        foreach ($segments as $segment) {
+                            if (!isset($tempValue[$segment])) {
+                                return; // No roles found, exit silently
+                            }
+                            $tempValue = $tempValue[$segment];
+                        }
+                        $aRoles = $tempValue;
                     } else {
-                        $criteria->compare('name', $role, true);
-                    }
-                    $oRole = Permissiontemplates::model()->find($criteria);
-                    if ($oRole) {
-                        $resetPermission = true;
-                        Permissiontemplates::model()->applyToUser($userId, $oRole->ptid);
+                        $aRoles = $this->resourceData[$rolesKey] ?? null;
                     }
                 }
-                // Set the auth_oauth global permission to 0 (not used if have roles, but keep it at 0 for roles_needed
-                if ($resetPermission) {
-                    self::setOauthPermission($userId, false);
+                
+                if (!empty($aRoles)) {
+                    $resetPermission = false;
+                    $aRoles = (array) $aRoles;
+                    foreach ($aRoles as $role) {
+                        $rolesRemovetext = $this->getGlobalSetting('roles_removetext', '');
+                        $role = str_replace($rolesRemovetext, '', $role);
+                        $criteria = new CDbCriteria();
+                        if ($this->getGlobalSetting('roles_insensitive', false)) {
+                            $criteria->compare('LOWER(name)', strtolower($role), true);
+                        } else {
+                            $criteria->compare('name', $role, true);
+                        }
+                        $oRole = Permissiontemplates::model()->find($criteria);
+                        if ($oRole) {
+                            $resetPermission = true;
+                            Permissiontemplates::model()->applyToUser($userId, $oRole->ptid);
+                        }
+                    }
+                    // Set the auth_oauth global permission to 0 (not used if have roles, but keep it at 0 for roles_needed
+                    if ($resetPermission) {
+                        self::setOauthPermission($userId, false);
+                    }
                 }
+            } catch (Exception $e) {
+                // If there's an error getting roles, just continue without setting roles
+                Yii::log("Error getting roles: " . $e->getMessage(), 'warning', 'AuthOAuth2');
             }
         }
     }
