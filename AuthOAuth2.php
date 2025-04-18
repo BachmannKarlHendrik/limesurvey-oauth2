@@ -422,62 +422,14 @@ class AuthOAuth2 extends AuthPluginBase
             }
         }
         if ($this->getGlobalSetting('roles_needed', false) && $rolesKey = $this->getGlobalSetting('roles_key', '')) {
-            // Debug: Show what roles key we're using
-            throw new CHttpException(400, "Debug - Checking roles with key: " . $rolesKey);
-            
-            // Check if there are roles in the nested structure
-            try {
-                $aRoles = null;
-                if (str_contains($rolesKey, '|')) {
-                    // Handle nested structure using | separator
-                    $segments = explode('|', $rolesKey);
-                    $tempValue = $this->resourceData;
-                    
-                    // Debug: Show resource data structure
-                    throw new CHttpException(400, "Debug - Resource Data for roles check: " . print_r(array_keys($this->resourceData), true));
-                    
-                    foreach ($segments as $segment) {
-                        if (!isset($tempValue[$segment])) {
-                            // Debug: Which segment is missing
-                            throw new CHttpException(400, "Debug - Missing segment in roles check: " . $segment . " in path " . $rolesKey);
-                            $aRoles = [];
-                            break;
-                        }
-                        $tempValue = $tempValue[$segment];
-                    }
-                    $aRoles = $tempValue;
+            $aRoles = $this->getNestedArrayData($rolesKey);
+            if (empty($aRoles)) {
+                if ($this->getGlobalSetting('is_default')) {
+                    /* No way to connect : throw a 403 error (avoid looping) */
+                    throw new CHttpException(403, gT('Incorrect username and/or password!'));
                 } else {
-                    $aRoles = $this->getTemplatedKey($rolesKey);
-                }
-                
-                // Debug: What roles were found
-                throw new CHttpException(400, "Debug - Roles found in check: " . print_r($aRoles, true));
-                
-                if (empty($aRoles)) {
-                    // Debug: No roles found, will deny access
-                    throw new CHttpException(400, "Debug - No roles found in check, will deny access");
-                    
-                    if ($this->getGlobalSetting('is_default')) {
-                        /* No way to connect : throw a 403 error (avoid looping) */
-                        throw new CHttpException(403, gT('Incorrect username and/or password!'));
-                    } else {
-                        $this->setAuthFailure(self::ERROR_AUTH_METHOD_INVALID);
-                        return;
-                    }
-                }
-            } catch (Exception $e) {
-                // If error is not our debug exception, log it
-                if (strpos($e->getMessage(), "Debug - ") === false) {
-                    // If there's an error in roles check, deny access
-                    if ($this->getGlobalSetting('is_default')) {
-                        throw new CHttpException(403, gT('Incorrect username and/or password!'));
-                    } else {
-                        $this->setAuthFailure(self::ERROR_AUTH_METHOD_INVALID);
-                        return;
-                    }
-                } else {
-                    // Re-throw our debug exception
-                    throw $e;
+                    $this->setAuthFailure(self::ERROR_AUTH_METHOD_INVALID);
+                    return;
                 }
             }
         }
@@ -572,9 +524,9 @@ class AuthOAuth2 extends AuthPluginBase
     /**
      * @param string $iKey
      * @param string $iSeparator
-     * @return string|array
+     * @return string
      */
-    public function getTemplatedKey(string $iKey, string $iSeparator = '.'): string|array
+    public function getTemplatedKey(string $iKey, string $iSeparator = '.'): string
     {
         $rValue = '';
         if (str_contains($iKey, '.') || str_contains($iKey, '+')) {
@@ -634,8 +586,8 @@ class AuthOAuth2 extends AuthPluginBase
                         }
                     }
                     
-                    // Ensure we return a string value, but only when using in string context
-                    if (is_array($value) && !$this->isRolesKey($sub_key)) {
+                    // Ensure we return a string value
+                    if (is_array($value)) {
                         throw new CHttpException(401, $this->gT('Expected string value but got array for key:') . $sub_key);
                     }
                     
@@ -658,8 +610,8 @@ class AuthOAuth2 extends AuthPluginBase
                 }
                 $rValue = $tempValue;
                 
-                // Allow array for roles key
-                if (is_array($rValue) && !$this->isRolesKey($iKey)) {
+                // Ensure we return a string
+                if (is_array($rValue)) {
                     throw new CHttpException(401, $this->gT('Expected string value but got array for key:') . $iKey);
                 }
             } else {
@@ -667,17 +619,6 @@ class AuthOAuth2 extends AuthPluginBase
             }
         }
         return $rValue;
-    }
-    
-    /**
-     * Check if the key is being used for roles
-     * @param string $key
-     * @return bool
-     */
-    private function isRolesKey(string $key): bool
-    {
-        $rolesKey = $this->getGlobalSetting('roles_key', '');
-        return !empty($rolesKey) && ($key === $rolesKey || str_contains($key, $rolesKey));
     }
 
     /**
@@ -814,53 +755,29 @@ class AuthOAuth2 extends AuthPluginBase
     {
         $rolesKey = $this->getGlobalSetting('roles_key', '');
         if (!empty($rolesKey)) {
-            // Use getTemplatedKey to handle nested paths
-            try {
-                $aRoles = $this->getTemplatedKey($rolesKey);
-                // If getTemplatedKey returns a string but we need an array, try direct access
-                if (!is_array($aRoles)) {
-                    if (str_contains($rolesKey, '|')) {
-                        // Handle nested structure using | separator
-                        $segments = explode('|', $rolesKey);
-                        $tempValue = $this->resourceData;
-                        foreach ($segments as $segment) {
-                            if (!isset($tempValue[$segment])) {
-                                return; // No roles found, exit silently
-                            }
-                            $tempValue = $tempValue[$segment];
-                        }
-                        $aRoles = $tempValue;
+            $aRoles = $this->getNestedArrayData($rolesKey);
+            if (!empty($aRoles)) {
+                $resetPermission = false;
+                $aRoles = (array) $aRoles;
+                foreach ($aRoles as $role) {
+                    $rolesRemovetext = $this->getGlobalSetting('roles_removetext', '');
+                    $role = str_replace($rolesRemovetext, '', $role);
+                    $criteria = new CDbCriteria();
+                    if ($this->getGlobalSetting('roles_insensitive', false)) {
+                        $criteria->compare('LOWER(name)', strtolower($role), true);
                     } else {
-                        $aRoles = $this->resourceData[$rolesKey] ?? null;
+                        $criteria->compare('name', $role, true);
+                    }
+                    $oRole = Permissiontemplates::model()->find($criteria);
+                    if ($oRole) {
+                        $resetPermission = true;
+                        Permissiontemplates::model()->applyToUser($userId, $oRole->ptid);
                     }
                 }
-                
-                if (!empty($aRoles)) {
-                    $resetPermission = false;
-                    $aRoles = (array) $aRoles;
-                    foreach ($aRoles as $role) {
-                        $rolesRemovetext = $this->getGlobalSetting('roles_removetext', '');
-                        $role = str_replace($rolesRemovetext, '', $role);
-                        $criteria = new CDbCriteria();
-                        if ($this->getGlobalSetting('roles_insensitive', false)) {
-                            $criteria->compare('LOWER(name)', strtolower($role), true);
-                        } else {
-                            $criteria->compare('name', $role, true);
-                        }
-                        $oRole = Permissiontemplates::model()->find($criteria);
-                        if ($oRole) {
-                            $resetPermission = true;
-                            Permissiontemplates::model()->applyToUser($userId, $oRole->ptid);
-                        }
-                    }
-                    // Set the auth_oauth global permission to 0 (not used if have roles, but keep it at 0 for roles_needed
-                    if ($resetPermission) {
-                        self::setOauthPermission($userId, false);
-                    }
+                // Set the auth_oauth global permission to 0 (not used if have roles, but keep it at 0 for roles_needed
+                if ($resetPermission) {
+                    self::setOauthPermission($userId, false);
                 }
-            } catch (Exception $e) {
-                // If there's an error getting roles, just continue without setting roles
-                Yii::log("Error getting roles: " . $e->getMessage(), 'warning', 'AuthOAuth2');
             }
         }
     }
@@ -893,5 +810,33 @@ class AuthOAuth2 extends AuthPluginBase
         $oPermission->import_p = 0;
         $oPermission->export_p = 0;
         $oPermission->save();
+    }
+
+    /**
+     * Get a value from resource data with support for nested paths using | separator
+     * This is used specifically for arrays like roles/groups
+     * @param string $key Key with optional | for nested paths
+     * @return array
+     */
+    private function getNestedArrayData(string $key): array
+    {
+        if (str_contains($key, '|')) {
+            // Handle nested structure using | separator
+            $segments = explode('|', $key);
+            $value = $this->resourceData;
+            
+            foreach ($segments as $segment) {
+                if (!isset($value[$segment])) {
+                    return []; // Return empty array if path not found
+                }
+                $value = $value[$segment];
+            }
+            
+            return (array)$value; // Cast to array to handle both array and single values
+        }
+        
+        // If not a nested path, use standard method and convert to array
+        $value = $this->getFromResourceData($key);
+        return is_array($value) ? $value : [$value];
     }
 }
