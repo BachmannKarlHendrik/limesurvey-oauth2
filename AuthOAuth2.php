@@ -442,7 +442,7 @@ class AuthOAuth2 extends AuthPluginBase
             $displayNameKey = $this->getGlobalSetting('display_name_key');
             $displayName = $this->getTemplatedKey($displayNameKey, ' ');
             $emailKey = $this->getGlobalSetting('email_key');
-            $email = $this->getFromResourceData($emailKey);
+            $email = $this->getTemplatedKey($emailKey);
 
             $user = new User();
             $user->parent_id = 1;
