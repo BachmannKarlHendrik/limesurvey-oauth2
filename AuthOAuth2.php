@@ -538,7 +538,22 @@ class AuthOAuth2 extends AuthPluginBase
                     if (str_contains($sub_key, '.')) {
                         $sub_key_as_table = explode('.', $sub_key);
                         $sub_key_modified = $sub_key_as_table[0];
-                        $value = $this->getFromResourceData($sub_key_modified);
+                        
+                        // Handle nested paths with | for better access to nested JSON
+                        if (str_contains($sub_key_modified, '|')) {
+                            $segments = explode('|', $sub_key_modified);
+                            $tempValue = $this->resourceData;
+                            foreach ($segments as $segment) {
+                                if (!isset($tempValue[$segment])) {
+                                    throw new CHttpException(401, $this->gT('User data is missing required attributes:') . $sub_key_modified);
+                                }
+                                $tempValue = $tempValue[$segment];
+                            }
+                            $value = $tempValue;
+                        } else {
+                            $value = $this->getFromResourceData($sub_key_modified);
+                        }
+                        
                         $modifier = $sub_key_as_table[1];
                         if ($modifier === 'first_letter') {
                             $value = join('', array_map(
@@ -555,8 +570,27 @@ class AuthOAuth2 extends AuthPluginBase
                             $value = strtolower($value);
                         }
                     } else {
-                        $value = $this->getFromResourceData($sub_key_modified);
+                        // Handle nested paths with | for better access to nested JSON
+                        if (str_contains($sub_key, '|')) {
+                            $segments = explode('|', $sub_key);
+                            $tempValue = $this->resourceData;
+                            foreach ($segments as $segment) {
+                                if (!isset($tempValue[$segment])) {
+                                    throw new CHttpException(401, $this->gT('User data is missing required attributes:') . $sub_key);
+                                }
+                                $tempValue = $tempValue[$segment];
+                            }
+                            $value = $tempValue;
+                        } else {
+                            $value = $this->getFromResourceData($sub_key);
+                        }
                     }
+                    
+                    // Ensure we return a string value
+                    if (is_array($value)) {
+                        throw new CHttpException(401, $this->gT('Expected string value but got array for key:') . $sub_key);
+                    }
+                    
                     return $value;
                 },
                 explode("+", $iKey)
@@ -564,7 +598,25 @@ class AuthOAuth2 extends AuthPluginBase
 
             $rValue = join($iSeparator, $sub_values);
         } else {
-            $rValue = $this->getFromResourceData($iKey);
+            // Handle nested paths with | for direct keys
+            if (str_contains($iKey, '|')) {
+                $segments = explode('|', $iKey);
+                $tempValue = $this->resourceData;
+                foreach ($segments as $segment) {
+                    if (!isset($tempValue[$segment])) {
+                        throw new CHttpException(401, $this->gT('User data is missing required attributes:') . $iKey);
+                    }
+                    $tempValue = $tempValue[$segment];
+                }
+                $rValue = $tempValue;
+                
+                // Ensure we return a string
+                if (is_array($rValue)) {
+                    throw new CHttpException(401, $this->gT('Expected string value but got array for key:') . $iKey);
+                }
+            } else {
+                $rValue = $this->getFromResourceData($iKey);
+            }
         }
         return $rValue;
     }
@@ -576,23 +628,10 @@ class AuthOAuth2 extends AuthPluginBase
     private function getFromResourceData(string $key): mixed
     {
         $value = '';
-        if (str_contains($key, '|')) {
-            // Handle nested structure using | separator
-            $segments = explode('|', $key);
-            $value = $this->resourceData;
-            foreach ($segments as $segment) {
-                if (!isset($value[$segment])) {
-                    throw new CHttpException(401, $this->gT('User data is missing required attributes to create new user:') . $key);
-                }
-                $value = $value[$segment];
-            }
+        if (empty($this->resourceData[$key])) {
+            throw new CHttpException(401, $this->gT('User data is missing required attributes to create new user:') . $key);
         } else {
-            // Original flat structure handling
-            if (empty($this->resourceData[$key])) {
-                throw new CHttpException(401, $this->gT('User data is missing required attributes to create new user:') . $key);
-            } else {
-                $value = $this->resourceData[$key];
-            }
+            $value = $this->resourceData[$key];
         }
         return $value;
     }
