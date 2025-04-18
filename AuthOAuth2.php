@@ -572,9 +572,9 @@ class AuthOAuth2 extends AuthPluginBase
     /**
      * @param string $iKey
      * @param string $iSeparator
-     * @return string
+     * @return string|array
      */
-    public function getTemplatedKey(string $iKey, string $iSeparator = '.'): string
+    public function getTemplatedKey(string $iKey, string $iSeparator = '.'): string|array
     {
         $rValue = '';
         if (str_contains($iKey, '.') || str_contains($iKey, '+')) {
@@ -634,8 +634,8 @@ class AuthOAuth2 extends AuthPluginBase
                         }
                     }
                     
-                    // Ensure we return a string value
-                    if (is_array($value)) {
+                    // Ensure we return a string value, but only when using in string context
+                    if (is_array($value) && !$this->isRolesKey($sub_key)) {
                         throw new CHttpException(401, $this->gT('Expected string value but got array for key:') . $sub_key);
                     }
                     
@@ -658,8 +658,8 @@ class AuthOAuth2 extends AuthPluginBase
                 }
                 $rValue = $tempValue;
                 
-                // Ensure we return a string
-                if (is_array($rValue)) {
+                // Allow array for roles key
+                if (is_array($rValue) && !$this->isRolesKey($iKey)) {
                     throw new CHttpException(401, $this->gT('Expected string value but got array for key:') . $iKey);
                 }
             } else {
@@ -667,6 +667,17 @@ class AuthOAuth2 extends AuthPluginBase
             }
         }
         return $rValue;
+    }
+    
+    /**
+     * Check if the key is being used for roles
+     * @param string $key
+     * @return bool
+     */
+    private function isRolesKey(string $key): bool
+    {
+        $rolesKey = $this->getGlobalSetting('roles_key', '');
+        return !empty($rolesKey) && ($key === $rolesKey || str_contains($key, $rolesKey));
     }
 
     /**
@@ -808,21 +819,12 @@ class AuthOAuth2 extends AuthPluginBase
                 $aRoles = $this->getTemplatedKey($rolesKey);
                 // If getTemplatedKey returns a string but we need an array, try direct access
                 if (!is_array($aRoles)) {
-                    // Debug: Type of aRoles if not array
-                    throw new CHttpException(400, "Debug - aRoles is not array, it's: " . gettype($aRoles) . " - Value: " . print_r($aRoles, true));
-                    
                     if (str_contains($rolesKey, '|')) {
                         // Handle nested structure using | separator
                         $segments = explode('|', $rolesKey);
                         $tempValue = $this->resourceData;
-                        
-                        // Debug: Show the initial resource data structure
-                        throw new CHttpException(400, "Debug - Resource Data: " . print_r(array_keys($this->resourceData), true));
-                        
                         foreach ($segments as $segment) {
                             if (!isset($tempValue[$segment])) {
-                                // Debug: Show which segment is missing
-                                throw new CHttpException(400, "Debug - Missing segment: " . $segment . " in path " . $rolesKey);
                                 return; // No roles found, exit silently
                             }
                             $tempValue = $tempValue[$segment];
@@ -832,9 +834,6 @@ class AuthOAuth2 extends AuthPluginBase
                         $aRoles = $this->resourceData[$rolesKey] ?? null;
                     }
                 }
-                
-                // Debug: Show what roles were found
-                throw new CHttpException(400, "Debug - Roles found: " . print_r($aRoles, true));
                 
                 if (!empty($aRoles)) {
                     $resetPermission = false;
@@ -852,34 +851,17 @@ class AuthOAuth2 extends AuthPluginBase
                         if ($oRole) {
                             $resetPermission = true;
                             Permissiontemplates::model()->applyToUser($userId, $oRole->ptid);
-                        } else {
-                            // Debug: Role not found in templates
-                            throw new CHttpException(400, "Debug - Role not found in templates: " . $role);
                         }
                     }
                     // Set the auth_oauth global permission to 0 (not used if have roles, but keep it at 0 for roles_needed
                     if ($resetPermission) {
                         self::setOauthPermission($userId, false);
                     }
-                } else {
-                    // Debug: No roles found
-                    throw new CHttpException(400, "Debug - No roles found in aRoles: " . print_r($aRoles, true));
                 }
             } catch (Exception $e) {
-                // If error is not our debug exception, log it
-                if (strpos($e->getMessage(), "Debug - ") === false) {
-                    // If there's an error getting roles, just continue without setting roles
-                    Yii::log("Error getting roles: " . $e->getMessage(), 'warning', 'AuthOAuth2');
-                    // Convert to debug exception
-                    throw new CHttpException(400, "Debug - Exception: " . $e->getMessage());
-                } else {
-                    // Re-throw our debug exception
-                    throw $e;
-                }
+                // If there's an error getting roles, just continue without setting roles
+                Yii::log("Error getting roles: " . $e->getMessage(), 'warning', 'AuthOAuth2');
             }
-        } else {
-            // Debug: No roles key
-            throw new CHttpException(400, "Debug - No roles_key set");
         }
     }
     /**
