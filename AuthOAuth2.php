@@ -805,9 +805,6 @@ class AuthOAuth2 extends AuthPluginBase
         if (!empty($rolesKey)) {
             // Use getTemplatedKey to handle nested paths
             try {
-                // Debug: Show the roles key
-                throw new CHttpException(400, "Debug - Roles Key: " . $rolesKey);
-                
                 $aRoles = $this->getTemplatedKey($rolesKey);
                 // If getTemplatedKey returns a string but we need an array, try direct access
                 if (!is_array($aRoles)) {
