@@ -422,6 +422,9 @@ class AuthOAuth2 extends AuthPluginBase
             }
         }
         if ($this->getGlobalSetting('roles_needed', false) && $rolesKey = $this->getGlobalSetting('roles_key', '')) {
+            // Debug: Show what roles key we're using
+            throw new CHttpException(400, "Debug - Checking roles with key: " . $rolesKey);
+            
             // Check if there are roles in the nested structure
             try {
                 $aRoles = null;
@@ -429,8 +432,14 @@ class AuthOAuth2 extends AuthPluginBase
                     // Handle nested structure using | separator
                     $segments = explode('|', $rolesKey);
                     $tempValue = $this->resourceData;
+                    
+                    // Debug: Show resource data structure
+                    throw new CHttpException(400, "Debug - Resource Data for roles check: " . print_r(array_keys($this->resourceData), true));
+                    
                     foreach ($segments as $segment) {
                         if (!isset($tempValue[$segment])) {
+                            // Debug: Which segment is missing
+                            throw new CHttpException(400, "Debug - Missing segment in roles check: " . $segment . " in path " . $rolesKey);
                             $aRoles = [];
                             break;
                         }
@@ -441,7 +450,13 @@ class AuthOAuth2 extends AuthPluginBase
                     $aRoles = $this->getTemplatedKey($rolesKey);
                 }
                 
+                // Debug: What roles were found
+                throw new CHttpException(400, "Debug - Roles found in check: " . print_r($aRoles, true));
+                
                 if (empty($aRoles)) {
+                    // Debug: No roles found, will deny access
+                    throw new CHttpException(400, "Debug - No roles found in check, will deny access");
+                    
                     if ($this->getGlobalSetting('is_default')) {
                         /* No way to connect : throw a 403 error (avoid looping) */
                         throw new CHttpException(403, gT('Incorrect username and/or password!'));
@@ -451,12 +466,18 @@ class AuthOAuth2 extends AuthPluginBase
                     }
                 }
             } catch (Exception $e) {
-                // If there's an error in roles check, deny access
-                if ($this->getGlobalSetting('is_default')) {
-                    throw new CHttpException(403, gT('Incorrect username and/or password!'));
+                // If error is not our debug exception, log it
+                if (strpos($e->getMessage(), "Debug - ") === false) {
+                    // If there's an error in roles check, deny access
+                    if ($this->getGlobalSetting('is_default')) {
+                        throw new CHttpException(403, gT('Incorrect username and/or password!'));
+                    } else {
+                        $this->setAuthFailure(self::ERROR_AUTH_METHOD_INVALID);
+                        return;
+                    }
                 } else {
-                    $this->setAuthFailure(self::ERROR_AUTH_METHOD_INVALID);
-                    return;
+                    // Re-throw our debug exception
+                    throw $e;
                 }
             }
         }
@@ -784,15 +805,27 @@ class AuthOAuth2 extends AuthPluginBase
         if (!empty($rolesKey)) {
             // Use getTemplatedKey to handle nested paths
             try {
+                // Debug: Show the roles key
+                throw new CHttpException(400, "Debug - Roles Key: " . $rolesKey);
+                
                 $aRoles = $this->getTemplatedKey($rolesKey);
                 // If getTemplatedKey returns a string but we need an array, try direct access
                 if (!is_array($aRoles)) {
+                    // Debug: Type of aRoles if not array
+                    throw new CHttpException(400, "Debug - aRoles is not array, it's: " . gettype($aRoles) . " - Value: " . print_r($aRoles, true));
+                    
                     if (str_contains($rolesKey, '|')) {
                         // Handle nested structure using | separator
                         $segments = explode('|', $rolesKey);
                         $tempValue = $this->resourceData;
+                        
+                        // Debug: Show the initial resource data structure
+                        throw new CHttpException(400, "Debug - Resource Data: " . print_r(array_keys($this->resourceData), true));
+                        
                         foreach ($segments as $segment) {
                             if (!isset($tempValue[$segment])) {
+                                // Debug: Show which segment is missing
+                                throw new CHttpException(400, "Debug - Missing segment: " . $segment . " in path " . $rolesKey);
                                 return; // No roles found, exit silently
                             }
                             $tempValue = $tempValue[$segment];
@@ -802,6 +835,9 @@ class AuthOAuth2 extends AuthPluginBase
                         $aRoles = $this->resourceData[$rolesKey] ?? null;
                     }
                 }
+                
+                // Debug: Show what roles were found
+                throw new CHttpException(400, "Debug - Roles found: " . print_r($aRoles, true));
                 
                 if (!empty($aRoles)) {
                     $resetPermission = false;
@@ -819,17 +855,34 @@ class AuthOAuth2 extends AuthPluginBase
                         if ($oRole) {
                             $resetPermission = true;
                             Permissiontemplates::model()->applyToUser($userId, $oRole->ptid);
+                        } else {
+                            // Debug: Role not found in templates
+                            throw new CHttpException(400, "Debug - Role not found in templates: " . $role);
                         }
                     }
                     // Set the auth_oauth global permission to 0 (not used if have roles, but keep it at 0 for roles_needed
                     if ($resetPermission) {
                         self::setOauthPermission($userId, false);
                     }
+                } else {
+                    // Debug: No roles found
+                    throw new CHttpException(400, "Debug - No roles found in aRoles: " . print_r($aRoles, true));
                 }
             } catch (Exception $e) {
-                // If there's an error getting roles, just continue without setting roles
-                Yii::log("Error getting roles: " . $e->getMessage(), 'warning', 'AuthOAuth2');
+                // If error is not our debug exception, log it
+                if (strpos($e->getMessage(), "Debug - ") === false) {
+                    // If there's an error getting roles, just continue without setting roles
+                    Yii::log("Error getting roles: " . $e->getMessage(), 'warning', 'AuthOAuth2');
+                    // Convert to debug exception
+                    throw new CHttpException(400, "Debug - Exception: " . $e->getMessage());
+                } else {
+                    // Re-throw our debug exception
+                    throw $e;
+                }
             }
+        } else {
+            // Debug: No roles key
+            throw new CHttpException(400, "Debug - No roles_key set");
         }
     }
     /**
