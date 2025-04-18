@@ -576,10 +576,23 @@ class AuthOAuth2 extends AuthPluginBase
     private function getFromResourceData(string $key): mixed
     {
         $value = '';
-        if (empty($this->resourceData[$key])) {
-            throw new CHttpException(401, $this->gT('User data is missing required attributes to create new user:') . $key);
+        if (str_contains($key, '|')) {
+            // Handle nested structure using | separator
+            $segments = explode('|', $key);
+            $value = $this->resourceData;
+            foreach ($segments as $segment) {
+                if (!isset($value[$segment])) {
+                    throw new CHttpException(401, $this->gT('User data is missing required attributes to create new user:') . $key);
+                }
+                $value = $value[$segment];
+            }
         } else {
-            $value = $this->resourceData[$key];
+            // Original flat structure handling
+            if (empty($this->resourceData[$key])) {
+                throw new CHttpException(401, $this->gT('User data is missing required attributes to create new user:') . $key);
+            } else {
+                $value = $this->resourceData[$key];
+            }
         }
         return $value;
     }
