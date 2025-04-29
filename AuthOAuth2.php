@@ -325,11 +325,14 @@ class AuthOAuth2 extends AuthPluginBase
      */
     public function beforeLogin()
     {
+        error_log('OAuth2: Starting beforeLogin');
         $request = $this->api->getRequest();
         if ($error = $request->getParam('error')) {
+            error_log('OAuth2: Error in request params: ' . $error);
             throw new CHttpException(401, $request->getParam('error_description', $error));
         }
 
+        error_log('OAuth2: Creating provider with client_id: ' . $this->getGlobalSetting('client_id'));
         $provider = new GenericProvider([
             'clientId' => $this->getGlobalSetting('client_id'),
             'clientSecret' => $this->getGlobalSetting('client_secret'),
@@ -347,49 +350,73 @@ class AuthOAuth2 extends AuthPluginBase
         ]);
 
         $code = $request->getParam('code');
+        error_log('OAuth2: Auth code from request: ' . ($code ? 'present' : 'missing'));
+        
         $defaultAuth = $this->getGlobalSetting('is_default') ? self::class : null;
+        error_log('OAuth2: Default auth method: ' . ($defaultAuth ? $defaultAuth : 'none'));
+        error_log('OAuth2: Requested auth method: ' . $request->getParam('authMethod', $defaultAuth));
+        
         if (empty($code) && $request->getParam('authMethod', $defaultAuth) !== self::class) {
+            error_log('OAuth2: No code and not OAuth2 auth method, returning');
             return;
         }
 
         if (empty($code)) {
+            error_log('OAuth2: No code, redirecting to authorization URL');
             $authorizationUrl = $provider->getAuthorizationUrl();
             Yii::app()->session->add(self::SESSION_STATE_KEY, $provider->getState());
-
+            error_log('OAuth2: State saved to session: ' . $provider->getState());
             $request->redirect($authorizationUrl);
         }
 
         $state = $request->getParam('state');
         $safedState = Yii::app()->session->get(self::SESSION_STATE_KEY);
+        error_log('OAuth2: State validation - Received: ' . $state . ', Saved: ' . $safedState);
+        
         if ($state !== $safedState) {
+            error_log('OAuth2: State mismatch - throwing exception');
             throw new CHttpException(400, $this->gT('Invalid state in OAuth response'));
         }
 
         Yii::app()->session->remove(self::SESSION_STATE_KEY);
+        error_log('OAuth2: State removed from session');
 
         try {
+            error_log('OAuth2: Attempting to get access token');
             $accessToken = $provider->getAccessToken('authorization_code', ['code' => $code]);
+            error_log('OAuth2: Successfully got access token');
         } catch (Throwable $exception) {
+            error_log('OAuth2: Failed to get access token - ' . $exception->getMessage());
             throw new CHttpException(400, $this->gT('Failed to retrieve access token'));
         }
 
         try {
+            error_log('OAuth2: Attempting to get resource owner details');
             $resourceOwner = $provider->getResourceOwner($accessToken);
             $this->resourceData = $resourceOwner->toArray();
+            error_log('OAuth2: Successfully got resource owner details: ' . json_encode($this->resourceData));
         } catch (Throwable $exception) {
+            error_log('OAuth2: Failed to get user details - ' . $exception->getMessage());
             throw new CHttpException(400, $this->gT('Failed to retrieve user details'));
         }
 
         if ($this->getGlobalSetting('identifier_attribute') === 'email') {
             $identifierKey = $this->getGlobalSetting('email_key');
+            error_log('OAuth2: Using email as identifier with key: ' . $identifierKey);
         } else {
             $identifierKey = $this->getGlobalSetting('username_key');
+            error_log('OAuth2: Using username as identifier with key: ' . $identifierKey);
         }
+        
         $userIdentifier = $this->getTemplatedKey($identifierKey);
+        error_log('OAuth2: Extracted user identifier: ' . $userIdentifier);
 
         if (empty($userIdentifier)) {
+            error_log('OAuth2: User identifier is empty');
             throw new CHttpException(400, 'User identifier not found or empty');
         }
+        
+        error_log('OAuth2: Setting username and auth plugin');
         $this->setUsername($userIdentifier);
         $this->setAuthPlugin();
     }
@@ -399,42 +426,63 @@ class AuthOAuth2 extends AuthPluginBase
      */
     public function newUserSession()
     {
+        error_log('OAuth2: Starting newUserSession');
         $userIdentifier = $this->getUserName();
+        error_log('OAuth2: User identifier from session: ' . $userIdentifier);
+        
         $identity = $this->getEvent()->get('identity');
+        error_log('OAuth2: Identity plugin: ' . $identity->plugin . ', Username: ' . $identity->username);
+        
         if ($identity->plugin != self::class || $identity->username !== $userIdentifier) {
+            error_log('OAuth2: Identity mismatch - returning');
             return;
         }
+        
         $oIdentityEvent = $this->getEvent();
 
         if ($this->getGlobalSetting('identifier_attribute') === 'email') {
+            error_log('OAuth2: Looking up user by email');
             $user = $this->api->getUserByEmail($userIdentifier);
         } else {
+            error_log('OAuth2: Looking up user by username');
             $user = $this->api->getUserByName($userIdentifier);
         }
 
+        error_log('OAuth2: User found: ' . ($user ? 'yes' : 'no'));
+        error_log('OAuth2: Autocreate users setting: ' . ($this->getGlobalSetting('autocreate_users') ? 'enabled' : 'disabled'));
+
         if (!$user && !$this->getGlobalSetting('autocreate_users')) {
+            error_log('OAuth2: User not found and autocreate disabled');
             if ($this->getGlobalSetting('is_default')) {
-                /* No way to connect : throw a 403 error (avoid looping) */
+                error_log('OAuth2: Throwing 403 as default auth method');
                 throw new CHttpException(403, gT('Incorrect username and/or password!'));
             } else {
+                error_log('OAuth2: Setting auth failure');
                 $this->setAuthFailure(self::ERROR_AUTH_METHOD_INVALID);
                 return;
             }
         }
+
         if ($this->getGlobalSetting('roles_needed', false) && $rolesKey = $this->getGlobalSetting('roles_key', '')) {
+            error_log('OAuth2: Checking roles with key: ' . $rolesKey);
             $aRoles = $this->getNestedArrayData($rolesKey);
+            error_log('OAuth2: Found roles: ' . json_encode($aRoles));
+            
             if (empty($aRoles)) {
+                error_log('OAuth2: No roles found');
                 if ($this->getGlobalSetting('is_default')) {
-                    /* No way to connect : throw a 403 error (avoid looping) */
+                    error_log('OAuth2: Throwing 403 as default auth method');
                     throw new CHttpException(403, gT('Incorrect username and/or password!'));
                 } else {
+                    error_log('OAuth2: Setting auth failure');
                     $this->setAuthFailure(self::ERROR_AUTH_METHOD_INVALID);
                     return;
                 }
             }
         }
+
         if (!$user) {
-            /* unregister to don't update event */
+            error_log('OAuth2: Creating new user');
             $this->unsubscribe('getGlobalBasePermissions');
 
             $usernameKey = $this->getGlobalSetting('username_key');
@@ -443,6 +491,8 @@ class AuthOAuth2 extends AuthPluginBase
             $displayName = $this->getTemplatedKey($displayNameKey, ' ');
             $emailKey = $this->getGlobalSetting('email_key');
             $email = $this->getTemplatedKey($emailKey);
+
+            error_log('OAuth2: New user details - Username: ' . $username . ', Email: ' . $email);
 
             $user = new User();
             $user->parent_id = 1;
@@ -453,54 +503,74 @@ class AuthOAuth2 extends AuthPluginBase
             $user->email = $email;
 
             if (!$user->save()) {
+                error_log('OAuth2: Failed to save new user - ' . json_encode($user->getErrors()));
                 throw new CHttpException(401, $this->gT('Failed to create new user'));
             }
+            error_log('OAuth2: New user created successfully');
+
             $defaultPermissions = @json_decode($this->getGlobalSetting('autocreate_permissions', self::getDefaultPermission()), true);
             if (!empty($defaultPermissions)) {
+                error_log('OAuth2: Setting default permissions');
                 Permission::setPermissions($user->uid, 0, 'global', $defaultPermissions, true);
             }
-            /* Add auth_oauth2 permission if not already exist*/
+
+            error_log('OAuth2: Setting OAuth permission');
             self::setOauthPermission($user->uid, true);
-            /* Add optional roles */
+
             if (method_exists(Permissiontemplates::class, 'applyToUser')) {
                 $autocreateRoles = $this->getGlobalSetting('autocreate_roles');
                 if (!empty($autocreateRoles)) {
+                    error_log('OAuth2: Setting auto-created roles: ' . json_encode($autocreateRoles));
                     foreach ($autocreateRoles as $role) {
                         Permissiontemplates::model()->applyToUser($user->uid, $role);
                     }
                 }
+                error_log('OAuth2: Setting roles to user');
                 $this->setRolesToUser($user->uid);
             }
+
             $this->setUsername($user->users_name);
+            error_log('OAuth2: Setting auth success for new user');
             $this->setAuthSuccess($user, $oIdentityEvent);
         } else {
-            /* Update roles if needed */
+            error_log('OAuth2: Existing user found, checking permissions');
+            
             if ($this->getGlobalSetting('roles_update', false)) {
+                error_log('OAuth2: Updating roles for existing user');
                 UserInPermissionrole::model()->deleteAll("uid = :uid", [':uid' => $user->uid]);
                 $this->setRolesToUser($user->uid);
             }
-            /* Check for permission */
+
+            error_log('OAuth2: Checking auth_oauth permission');
             if (!Permission::model()->hasGlobalPermission('auth_oauth', 'read', $user->uid)) {
-                /* Check if permission exist : if not create as true, else send error */
+                error_log('OAuth2: User does not have auth_oauth permission');
                 $permissionnExist = Permission::model()->findByAttributes([
                     'entity_id' => 0,
                     'entity' => 'global',
                     'uid' => $user->uid,
                     'permission' => 'auth_oauth'
                 ]);
+                
                 if (empty($permissionnExist)) {
+                    error_log('OAuth2: Creating auth_oauth permission');
                     Permission::model()->setGlobalPermission($user->uid, 'auth_oauth');
                 } else {
+                    error_log('OAuth2: Permission exists but not granted');
                     if ($this->getGlobalSetting('is_default')) {
-                        /* No way to connect : throw a 403 error (avoid looping) */
+                        error_log('OAuth2: Throwing 403 as default auth method');
                         throw new CHttpException(403, gT('Incorrect username and/or password!'));
                     } else {
+                        error_log('OAuth2: Setting auth failure');
                         $this->setAuthFailure(self::ERROR_AUTH_METHOD_INVALID);
                         return;
                     }
                 }
+            } else {
+                error_log('OAuth2: User has auth_oauth permission');
             }
+
             $this->setUsername($user->users_name);
+            error_log('OAuth2: Setting auth success for existing user');
             $this->setAuthSuccess($user);
         }
     }
